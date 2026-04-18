@@ -65,6 +65,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       QDRANT_URL: http://qdrant:6333
       REDIS_URL: redis://redis:6379/0
+      EMBEDDING_CACHE_DIR: /app/.cache/embeddings
     depends_on:
       postgres:
         condition: service_healthy
@@ -83,6 +84,9 @@ services:
       # by `uv sync` during local tooling) bleeding into the container. The
       # real container venv lives at /opt/venv, not here.
       - /app/.venv
+      # Shared BGE-M3 weights (~2 GB). Commit 5 will mount the same volume
+      # on the arq worker so the worker doesn't re-download.
+      - embedding_cache:/app/.cache/embeddings
     networks: [ragnet]
 
   frontend:
@@ -103,6 +107,7 @@ volumes:
   pgdata:
   qdrant_data:
   redis_data:
+  embedding_cache:
 
 networks:
   ragnet:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
@@ -43,6 +44,13 @@ class Settings(BaseSettings):
 
     embedding_model: str = "BAAI/bge-m3"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    # Shared embedding-model weights cache. In-container this points at the
+    # `embedding_cache` named volume (/app/.cache/embeddings). On the host
+    # it resolves to ~/.cache/embeddings so `uv run pytest` outside Docker
+    # still caches the BGE-M3 weights (~2 GB) between runs.
+    embedding_cache_dir: str = Field(
+        default_factory=lambda: str(Path.home() / ".cache" / "embeddings"),
+    )
 
     @property
     def cors_origins_list(self) -> list[str]:
