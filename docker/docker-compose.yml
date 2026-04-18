@@ -74,6 +74,15 @@ services:
         condition: service_healthy
     ports:
       - "${BACKEND_HOST_PORT:-8000}:8000"
+    volumes:
+      # Dev bind mount: host edits to ./backend show up in the container
+      # immediately, so code changes don't require rebuilding the image.
+      # The prod override nulls this out; see docker-compose.prod.yml.
+      - ../backend:/app
+      # Anonymous volume guards against a stray host-side venv (e.g. created
+      # by `uv sync` during local tooling) bleeding into the container. The
+      # real container venv lives at /opt/venv, not here.
+      - /app/.venv
     networks: [ragnet]
 
   frontend:
