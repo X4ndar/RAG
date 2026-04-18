@@ -16,6 +16,12 @@ dependencies = [
     "pydantic-settings>=2.6",
     "python-multipart>=0.0.17",
     "httpx>=0.28",
+    "arq>=0.26,<0.27",
+    "docling>=2.0",
+    "fastembed>=0.5",
+    "qdrant-client>=1.12",
+    "python-magic>=0.4",
+    "transformers>=4.44",
 ]
 
 [project.optional-dependencies]
