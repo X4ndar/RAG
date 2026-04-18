@@ -1,0 +1,47 @@
+name: rag-saas
+
+# Production override stub. Apply with:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Tighten this before any real deploy: remove published Postgres/Qdrant/Redis
+# ports, front the backend and frontend behind Caddy or Nginx with TLS, and
+# move secrets into a proper secret store (Docker secrets, Vault, etc).
+
+services:
+  postgres:
+    ports: []
+    restart: always
+
+  qdrant:
+    ports: []
+    restart: always
+
+  redis:
+    ports: []
+    restart: always
+
+  backend:
+    restart: always
+    environment:
+      APP_ENV: production
+    # ports: []  # uncomment once a reverse proxy is in front
+
+  frontend:
+    restart: always
+    # ports: []  # uncomment once a reverse proxy is in front
+
+  # caddy:
+  #   image: caddy:2-alpine
+  #   restart: always
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+  #     - caddy_data:/data
+  #     - caddy_config:/config
+  #   networks: [ragnet]
+
+# volumes:
+#   caddy_data:
+#   caddy_config:
