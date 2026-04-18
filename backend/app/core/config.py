@@ -1,0 +1,56 @@
+"""Application settings loaded from environment variables."""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import Literal
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+LLMProvider = Literal["ollama", "claude"]
+AppEnv = Literal["development", "staging", "production"]
+
+
+class Settings(BaseSettings):
+    """Runtime configuration.
+
+    All values are read from environment variables (or a `.env` file in
+    development). No secrets in code.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    app_env: AppEnv = "development"
+    log_level: str = "INFO"
+    secret_key: str = Field(default="change-me", min_length=8)
+
+    database_url: str = "postgresql+asyncpg://rag:rag@postgres:5432/rag"
+    qdrant_url: str = "http://qdrant:6333"
+    qdrant_api_key: str | None = None
+    redis_url: str = "redis://redis:6379/0"
+
+    backend_cors_origins: str = "http://localhost:3000"
+
+    llm_provider: LLMProvider = "ollama"
+    anthropic_api_key: str | None = None
+    ollama_host: str = "http://host.docker.internal:11434"
+
+    embedding_model: str = "BAAI/bge-m3"
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        """Split the comma-separated CORS origins string into a list."""
+        return [origin.strip() for origin in self.backend_cors_origins.split(",") if origin.strip()]
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """Return a cached Settings instance."""
+    return Settings()
