@@ -22,6 +22,20 @@ Smoke checks:
 - Qdrant: `curl http://localhost:6333/readyz`
 - Redis: `docker compose --env-file .env -f docker/docker-compose.yml exec redis redis-cli ping`
 
+## Migrations
+
+Always run Alembic inside the backend container. The in-repo `DATABASE_URL` targets the `postgres` hostname on the compose network, so host-side `alembic` calls resolve to a different database (or fail). Use the wrapper:
+
+```bash
+scripts/migrate.sh                                 # upgrade head (default)
+scripts/migrate.sh current                         # show applied revision
+scripts/migrate.sh history                         # list revisions
+scripts/migrate.sh revision --autogenerate -m "…"  # create a new migration
+scripts/migrate.sh downgrade -1                    # roll back one
+```
+
+The script auto-starts the `backend` service if it isn't running.
+
 ## Ports
 
 | Service  | Port      |
@@ -39,7 +53,7 @@ backend/   FastAPI app (SQLAlchemy async, Pydantic v2, Alembic)
 frontend/  Next.js 16 (App Router, Tailwind v4, shadcn, i18next)
 docker/    Compose files and Postgres init SQL
 docs/      Design notes and ADRs
-scripts/   setup.sh
+scripts/   setup.sh, migrate.sh
 reference/ ragflow/ clone for reading (gitignored)
 ```
 
