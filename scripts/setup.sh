@@ -30,8 +30,10 @@ cat <<'EOF'
 Next steps:
   1. Edit .env (secrets, DB creds, LLM provider).
   2. Start the stack:
-       docker compose -f docker/docker-compose.yml up --build
+       docker compose --env-file .env -f docker/docker-compose.yml up --build
   3. Smoke checks:
        curl http://localhost:8000/health
        open http://localhost:3000
+
+  If a port is already in use, override it in .env (e.g. FRONTEND_HOST_PORT=3100).
 EOF

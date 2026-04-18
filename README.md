@@ -11,16 +11,16 @@ v0 scaffold. Nothing but infrastructure: Postgres 16 with pgvector, Qdrant, Redi
 ```bash
 bash scripts/setup.sh                                    # clones RAGFlow reference, creates .env
 # edit .env as needed, then:
-docker compose -f docker/docker-compose.yml up --build
+docker compose --env-file .env -f docker/docker-compose.yml up --build
 ```
 
 Smoke checks:
 
 - Backend: `curl http://localhost:8000/health` -> `{"status":"ok"}`
 - Frontend: open http://localhost:3000
-- Postgres: `docker compose -f docker/docker-compose.yml exec postgres psql -U rag -d rag -c "SELECT extname FROM pg_extension;"` includes `vector`
+- Postgres: `docker compose --env-file .env -f docker/docker-compose.yml exec postgres psql -U rag -d rag -c "SELECT extname FROM pg_extension;"` includes `vector`
 - Qdrant: `curl http://localhost:6333/readyz`
-- Redis: `docker compose -f docker/docker-compose.yml exec redis redis-cli ping`
+- Redis: `docker compose --env-file .env -f docker/docker-compose.yml exec redis redis-cli ping`
 
 ## Ports
 
