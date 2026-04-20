@@ -51,6 +51,13 @@ class Settings(BaseSettings):
     embedding_cache_dir: str = Field(
         default_factory=lambda: str(Path.home() / ".cache" / "embeddings"),
     )
+    # Uploaded-document storage. In-container: /app/storage (named volume
+    # `document_storage`, mounted on backend and worker). On host: falls
+    # back to ~/.cache/rag-storage so direct-host runs don't write to
+    # arbitrary paths.
+    storage_dir: str = Field(
+        default_factory=lambda: str(Path.home() / ".cache" / "rag-storage"),
+    )
 
     @property
     def cors_origins_list(self) -> list[str]:

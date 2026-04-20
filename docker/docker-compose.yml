@@ -66,6 +66,7 @@ services:
       QDRANT_URL: http://qdrant:6333
       REDIS_URL: redis://redis:6379/0
       EMBEDDING_CACHE_DIR: /app/.cache/embeddings
+      STORAGE_DIR: /app/storage
     depends_on:
       postgres:
         condition: service_healthy
@@ -84,9 +85,43 @@ services:
       # by `uv sync` during local tooling) bleeding into the container. The
       # real container venv lives at /opt/venv, not here.
       - /app/.venv
-      # Shared BGE-M3 weights (~2 GB). Commit 5 will mount the same volume
-      # on the arq worker so the worker doesn't re-download.
+      # Shared BGE-M3 weights (~2 GB). Also mounted on the worker so the
+      # worker doesn't re-download.
       - embedding_cache:/app/.cache/embeddings
+      # Shared uploaded-PDF storage, readable by the worker.
+      - document_storage:/app/storage
+    networks: [ragnet]
+
+  worker:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: rag-worker
+    restart: unless-stopped
+    command: ["arq", "app.jobs.worker.WorkerSettings"]
+    env_file: ../.env
+    environment:
+      APP_ENV: ${APP_ENV}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      QDRANT_URL: http://qdrant:6333
+      REDIS_URL: redis://redis:6379/0
+      EMBEDDING_CACHE_DIR: /app/.cache/embeddings
+      STORAGE_DIR: /app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      # Same dev bind-mount pattern as the backend: host code edits show up
+      # after `docker compose restart worker`, no image rebuild needed. The
+      # prod override strips these.
+      - ../backend:/app
+      - /app/.venv
+      - embedding_cache:/app/.cache/embeddings
+      - document_storage:/app/storage
     networks: [ragnet]
 
   frontend:
@@ -108,6 +143,7 @@ volumes:
   qdrant_data:
   redis_data:
   embedding_cache:
+  document_storage:
 
 networks:
   ragnet:

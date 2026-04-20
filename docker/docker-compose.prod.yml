@@ -24,12 +24,23 @@ services:
     restart: always
     environment:
       APP_ENV: production
-    # Explicitly nuke the dev bind mount from docker-compose.yml. Prod must
-    # run only the code that was COPY'd into the image at build time.
-    # The !reset tag is the Compose spec's clear-list directive — `volumes: []`
-    # alone is merged additively with the base and leaves the bind mount intact.
-    volumes: !reset []
+    # Strip the dev bind mount + anon .venv; keep the data volumes prod
+    # actually needs. `!reset` alone clears the base list; we then list
+    # only the mounts we want.
+    volumes: !override
+      - embedding_cache:/app/.cache/embeddings
+      - document_storage:/app/storage
     # ports: []  # uncomment once a reverse proxy is in front
+
+  worker:
+    restart: always
+    environment:
+      APP_ENV: production
+    # Same rationale as backend: strip the dev bind mount + anon .venv,
+    # keep the data volumes.
+    volumes: !override
+      - embedding_cache:/app/.cache/embeddings
+      - document_storage:/app/storage
 
   frontend:
     restart: always

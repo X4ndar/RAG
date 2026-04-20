@@ -114,3 +114,12 @@ async def parse_pdf(path: Path) -> ParsedDocument:
         EmptyParseError: if Docling returns empty or whitespace-only markdown.
     """
     return await asyncio.to_thread(_parse_sync, path)
+
+
+async def warm_up_converter() -> None:
+    """Initialize the Docling converter inside a worker thread.
+
+    Call from the arq `on_startup` hook so the first parsed document
+    doesn't pay the layout-model load cost.
+    """
+    await asyncio.to_thread(_converter)
