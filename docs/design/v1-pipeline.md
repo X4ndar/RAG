@@ -187,7 +187,7 @@ Everything after that runs outside the lock. On any exception the outer handler 
 |-----------------|------------------|------------------------------------------------------------|
 | `arq`           | `>=0.26,<0.27`   | Async Redis queue, existing Redis service                  |
 | `docling`       | `>=2.0`          | Primary PDF parser per CLAUDE.md                           |
-| `fastembed`     | `>=0.5`          | BGE-M3 dense via ONNX, no Torch runtime dep                |
+| `sentence-transformers` | `>=3.0`  | BGE-M3 dense. FastEmbed path ruled out, see note below     |
 | `qdrant-client` | `>=1.12`         | `AsyncQdrantClient` + `query_points`                       |
 | `python-magic`  | `>=0.4`          | MIME from content bytes, not filename                      |
 | `transformers`  | `>=4.44`         | Tokenizer for BGE-M3 (token-count math for chunker)        |
@@ -196,9 +196,22 @@ Everything after that runs outside the lock. On any exception the outer handler 
 
 Gotchas from context7, still true:
 
-- FastEmbed is sync. Wrap with `asyncio.to_thread`.
+- The embedding library is sync. Wrap with `asyncio.to_thread`.
 - Qdrant `search()` is deprecated. Use `query_points()`.
 - BGE-M3 is **1024-dim**. Assert at startup; fail loud if it's not.
+
+### Embedding library: FastEmbed out, sentence-transformers in
+
+The original design pinned FastEmbed for the "no Torch in runtime" benefit. Real investigation (commit 3) found that benefit doesn't exist in our stack and the FastEmbed path has blockers:
+
+1. **Torch is already pulled in by Docling.** `docling>=2.0` installs `torch==2.11.0` and `torchvision==0.26.0` as hard transitive deps. Whether we use FastEmbed or sentence-transformers, the image carries Torch. The "slim runtime" argument is void.
+2. **FastEmbed's built-in catalog does not include BGE-M3.** `TextEmbedding.list_supported_models()` lists only BGE English variants and `bge-small-zh-v1.5`. No `bge-m3`.
+3. **`TextEmbedding.add_custom_model` does not work against the official `BAAI/bge-m3` repo.** The ONNX export lives in an `onnx/` subdirectory and FastEmbed's downloader silently skips subdirectories, then ONNX Runtime fails with `NO_SUCHFILE` on the expected flat path. `additional_files` explicitly listing the subdir contents does not fix this; FastEmbed validates final paths against its own layout assumptions.
+4. **Community flat-layout ONNX exports (`aapot/bge-m3-onnx`) do load** but emit a non-standard output shape (FastEmbed's `CustomTextEmbedding._normalize` raises `AxisError: axis 1 is out of bounds for array of dimension 1`). Converting/maintaining our own ONNX export for FastEmbed compatibility is out of V1 scope and adds a long-term brittle dependency on community forks.
+
+**Decision:** `sentence-transformers>=3.0`, `device="cpu"` for reproducibility, weights cached in the `embedding_cache` named volume. Expected ~3x slower CPU inference vs an ideal FastEmbed path, but batch embedding happens in the background worker (off request path) and query embedding is a single 50-100 ms call — not a V1 bottleneck.
+
+**Revisit in V2** if CPU-path latency becomes the bottleneck. Options: ship a vetted in-house ONNX export of BGE-M3, switch to a FastEmbed-native multilingual model (`intfloat/multilingual-e5-large` is in the built-in catalog), or add a GPU embedding lane.
 
 ## Parsing (`app/parsers/pdf_docling.py`)
 
