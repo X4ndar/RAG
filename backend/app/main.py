@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
+from app.jobs.enqueue import close_pool
 from app.retrieval.qdrant_client import close_client, ensure_collection
 from app.tenancy.middleware import TenantMiddleware
 
@@ -32,6 +33,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     await ensure_collection()
     yield
     await close_client()
+    await close_pool()
 
 
 app = FastAPI(
