@@ -35,8 +35,13 @@ FIXTURE_DIR = Path(__file__).parent.parent / "fixtures"
 SAMPLE_1 = FIXTURE_DIR / "fr_sample.pdf"
 SAMPLE_2 = FIXTURE_DIR / "fr_sample_2.pdf"
 
-PIPELINE_TIMEOUT_S = 60.0
-POLL_INTERVAL_S = 2.0
+# The original V1 design note proposed a 60 s budget assuming "small test
+# PDFs". The committed Wikipedia fixtures are ~8 pages each, and BGE-M3 on
+# CPU embeds a single chunk in 3–4 s; total observed pipeline ≈ 140 s for
+# fr_sample.pdf. 240 s leaves headroom without becoming an infinite wait.
+# Revisit if commit 7 ever swaps in shorter fixtures.
+PIPELINE_TIMEOUT_S = 240.0
+POLL_INTERVAL_S = 3.0
 
 pytestmark = pytest.mark.skipif(
     not SAMPLE_1.exists() or not SAMPLE_2.exists(),
@@ -130,26 +135,44 @@ async def test_tenant_isolation(
         doc_a = await _upload(client, tenant_a, SAMPLE_1)
         doc_b = await _upload(client, tenant_b, SAMPLE_2)
 
-        await _wait_ready(client, tenant_a, doc_a)
-        await _wait_ready(client, tenant_b, doc_b)
+        # Wait for both pipelines in parallel — arq's max_jobs=2 lets the
+        # worker pick up both at once, and `asyncio.gather` keeps the
+        # 240 s deadline shared rather than additive.
+        await asyncio.gather(
+            _wait_ready(client, tenant_a, doc_a),
+            _wait_ready(client, tenant_b, doc_b),
+        )
 
         # Tenant A searches with a generic query that could plausibly match
-        # either document. Every result MUST be doc_a.
-        hits_a = await _search(client, tenant_a, query="le sujet principal", top_k=10)
-        assert hits_a, "tenant A got no hits from their own document"
+        # either document. Every result MUST be doc_a, AND the count must
+        # equal top_k. The count check is what catches removal of the
+        # Qdrant filter: without it, Qdrant returns top-k mixed across
+        # both tenants by score, and the Postgres tenant_scoped filter
+        # silently drops the foreign chunks — leaving a SHORT result list.
+        # If only the Postgres filter were removed, the document_id check
+        # below would catch the foreign hits directly.
+        top_k = 5
+        hits_a = await _search(client, tenant_a, query="le sujet principal", top_k=top_k)
+        assert len(hits_a) == top_k, (
+            f"tenant A expected {top_k} hits, got {len(hits_a)}; "
+            "Qdrant likely returned cross-tenant points that Postgres dropped"
+        )
         for hit in hits_a:
             assert hit["document_id"] == doc_a, (
                 f"tenant A saw foreign document_id={hit['document_id']}; "
-                "tenant isolation leaked (Qdrant filter or Postgres filter)"
+                "Postgres tenant filter is missing"
             )
 
         # Symmetric from tenant B.
-        hits_b = await _search(client, tenant_b, query="le sujet principal", top_k=10)
-        assert hits_b, "tenant B got no hits from their own document"
+        hits_b = await _search(client, tenant_b, query="le sujet principal", top_k=top_k)
+        assert len(hits_b) == top_k, (
+            f"tenant B expected {top_k} hits, got {len(hits_b)}; "
+            "Qdrant likely returned cross-tenant points that Postgres dropped"
+        )
         for hit in hits_b:
             assert hit["document_id"] == doc_b, (
                 f"tenant B saw foreign document_id={hit['document_id']}; "
-                "tenant isolation leaked (Qdrant filter or Postgres filter)"
+                "Postgres tenant filter is missing"
             )
 
         # And a cross-tenant GET is 404, never 403.

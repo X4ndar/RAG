@@ -1,13 +1,22 @@
 """Shared fixtures for integration tests.
 
-Integration tests hit a running compose stack from the host, so DB
-access uses `localhost:5432` rather than the in-network `postgres:5432`
-hostname. Bring the stack up before `uv run pytest` — see
+Integration tests hit a running compose stack. URLs come from env vars
+so the same code works in two ways:
+- From the host: defaults — Postgres at `localhost:5432`, backend at
+  `http://localhost:8000`.
+- From inside the backend container (`docker compose exec backend uv run
+  pytest tests/integration`): set `INTEGRATION_DATABASE_URL=postgresql+
+  asyncpg://rag:rag@postgres:5432/rag` and `INTEGRATION_BACKEND_URL=
+  http://localhost:8000` (localhost inside the backend container is the
+  backend itself).
+
+Bring the stack up before `uv run pytest` — see
 docs/design/v1-pipeline.md §Verification.
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from uuid import UUID, uuid4
 
@@ -17,13 +26,16 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 
 from app.db.models import Tenant
 
-HOST_DATABASE_URL = "postgresql+asyncpg://rag:rag@localhost:5432/rag"
-BACKEND_URL = "http://localhost:8000"
+DATABASE_URL = os.environ.get(
+    "INTEGRATION_DATABASE_URL",
+    "postgresql+asyncpg://rag:rag@localhost:5432/rag",
+)
+BACKEND_URL = os.environ.get("INTEGRATION_BACKEND_URL", "http://localhost:8000")
 
 
 @pytest.fixture(scope="session")
 async def host_engine() -> AsyncIterator[AsyncEngine]:
-    engine = create_async_engine(HOST_DATABASE_URL, pool_pre_ping=True)
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
     yield engine
     await engine.dispose()
 

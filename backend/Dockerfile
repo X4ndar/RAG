@@ -15,6 +15,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         libpq-dev \
         libmagic1 \
+        # Docling pulls in image-processing deps (Pillow, qpdf) that need
+        # the X11/XCB shared libs even when we render headless.
+        libxcb1 \
+        libxext6 \
+        libsm6 \
+        libxrender1 \
+        libgl1 \
+        libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
