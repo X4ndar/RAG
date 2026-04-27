@@ -77,5 +77,11 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Session-scoped event loop. Required for the session-scoped `host_engine`
+# fixture in tests/integration/conftest.py — without this, asyncpg pooled
+# connections get bound to a per-test loop and the second integration
+# test fails on "Future attached to a different loop" during teardown.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 addopts = "-ra --strict-markers --cov=app --cov-report=term-missing"
 testpaths = ["tests"]
