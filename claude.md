@@ -86,12 +86,12 @@ Our stack and architecture differ from theirs in several places on purpose (see 
 
 **AI layer**
 - Agent orchestration: Pydantic AI. All agents, tool calls, and LLM-driven logic go through it. See "Pydantic AI usage" section below.
-- LLM providers via Pydantic AI: Anthropic Claude in production, Ollama running Qwen2.5 for development and cost-sensitive paths. Model selection is a config switch, not a code change.
-- Embeddings: BGE-M3 (dense + sparse + multi-vector in one model, 100+ languages). Used directly via sentence-transformers or FastEmbed. Not wrapped in Pydantic AI.
-- Reranker: `bge-reranker-v2-m3` or `jina-reranker-v2-base-multilingual`. Used directly.
+- LLM providers: BYOM (bring your own model). Every tenant configures their own provider: an external API (Anthropic, OpenAI, Google, Mistral, or any OpenAI-compatible endpoint) or a self-hosted endpoint (Ollama, vLLM, LM Studio, text-generation-inference). We never host LLMs, never resell API capacity, never hardcode a provider. If a tenant has not configured a provider, LLM-dependent features (chat, contextual retrieval, extraction) are unavailable for that tenant. See "LLM provider strategy (BYOM)" section below.
+- Embeddings: BGE-M3 (dense + sparse + multi-vector in one model, 100+ languages). Used directly via sentence-transformers or FastEmbed. Not wrapped in Pydantic AI. Runs on our infrastructure, not tenant-configured. Embeddings are a product primitive, not a customer choice.
+- Reranker: `bge-reranker-v2-m3` or `jina-reranker-v2-base-multilingual`. Used directly. Same reasoning as embeddings: our infrastructure, not tenant-configured.
 - OCR: PaddleOCR (same as RAGFlow, proven on Arabic)
 - Document parsing: Docling as primary, Unstructured.io as fallback for edge cases
-- Contextual Retrieval technique (Anthropic, 2024): enrich chunks with LLM-generated context before embedding. The enrichment call goes through Pydantic AI.
+- Contextual Retrieval technique (Anthropic, 2024): enrich chunks with LLM-generated context before embedding. The enrichment call goes through Pydantic AI and uses the tenant's configured provider.
 
 **Frontend**
 - Next.js 14+ (App Router)
@@ -113,7 +113,7 @@ Our stack and architecture differ from theirs in several places on purpose (see 
 
 2. **Hybrid search is the default.** Pure vector search is not acceptable. Every retrieval goes: BGE-M3 dense + sparse -> Postgres full-text (BM25-style) -> Reciprocal Rank Fusion -> reranker -> top-k. This is one pipeline, not multiple code paths.
 
-3. **Contextual Retrieval baked in.** Chunks are enriched with LLM-generated context before embedding. Use Ollama for this in dev, Claude Haiku in production for cost.
+3. **Contextual Retrieval baked in.** Chunks are enriched with LLM-generated context before embedding. The enrichment uses the tenant's configured LLM provider. If the tenant has no provider configured, chunks are embedded without enrichment (degraded but functional retrieval).
 
 4. **Connectors are pluggable.** ERP integrations, email sync, Google Drive, and other sources all implement a common `Connector` interface. Adding a new source does not require changing the retrieval or chat code.
 
@@ -122,6 +122,56 @@ Our stack and architecture differ from theirs in several places on purpose (see 
 6. **Agent-based query routing via Pydantic AI.** A Pydantic AI agent decides whether a query needs semantic retrieval, structured lookup, an ERP tool call, or a combination. Tools are defined as typed Python functions registered with the agent. Not every query goes through RAG.
 
 7. **French and Arabic are first-class.** Never hardcode UI strings. All user-facing text goes through the i18n layer. Right-to-left layouts work in Arabic. Test data includes real French contracts and Arabic documents.
+
+## LLM provider strategy (BYOM)
+
+The product is bring-your-own-model. Every tenant configures their own LLM provider through the admin UI. The platform never provides a default provider, never hosts LLMs, never resells inference capacity.
+
+**Supported provider types:**
+
+- External APIs via their official endpoints: Anthropic, OpenAI, Google (Gemini), Mistral, Cohere, Groq
+- Any OpenAI-compatible endpoint: self-hosted Ollama, vLLM, LM Studio, text-generation-inference, LiteLLM proxy, OpenRouter, Together, Fireworks
+- The "OpenAI-compatible custom" option is the catch-all for anything speaking the OpenAI chat completions API
+
+**Tenant configuration:**
+
+Stored in a `tenant_llm_configs` table. One row per tenant (or one per role if a tenant wants different models for chat vs enrichment, future phase). Fields include provider type, endpoint URL, model name, API key (encrypted at rest), and optional per-role overrides.
+
+The admin UI presents a configuration form with:
+- Provider dropdown (Anthropic, OpenAI, Google, Mistral, OpenAI-compatible custom, Ollama)
+- Conditional fields based on provider choice (URL, key, model name)
+- A "test connection" button that sends a trivial prompt and displays the response. No feature depending on LLMs is enabled until this test passes.
+
+**Implementation:**
+
+A provider factory reads the tenant's config and returns a configured Pydantic AI `Agent` or `Model` for each request. No agent, tool, or service hardcodes a provider string. The factory is the single chokepoint where "which model do I call" is resolved.
+
+```python
+# Sketch, not final API
+async def agent_for_tenant(tenant_id: UUID, role: AgentRole) -> Agent:
+    config = await load_tenant_llm_config(tenant_id, role)
+    if config is None:
+        raise LLMNotConfiguredError(tenant_id, role)
+    return build_agent(config, role)
+```
+
+**Encryption:**
+
+API keys are encrypted at the application layer using a key derivation function bound to a server-side master key (loaded from env var at startup). Never stored in plaintext. Never logged. Never returned from the API in full (admin UI shows last 4 characters only).
+
+**Failure modes:**
+
+- No provider configured: feature returns 409 with a message pointing to the settings page. No silent fallback to a default.
+- Configured provider returns an error: surface the provider's error to the user with a generic wrapper. The user's key and URL are their responsibility.
+- Rate limits or quota: pass through to the user. We don't queue or retry against the tenant's account without their explicit policy.
+
+**What this implies for deployment:**
+
+The product can run fully air-gapped. A tenant on a GPU-equipped server can configure `http://ollama:11434/v1` as their OpenAI-compatible endpoint and never make an outbound internet call. This is a deliberate product position, especially for Moroccan SME clients with data residency concerns, legal/healthcare verticals, or offline requirements.
+
+**What is NOT tenant-configured:**
+
+Embeddings, reranking, OCR, and document parsing all run on our infrastructure with our chosen models. These are product primitives, not customer choices. Changing them would change retrieval quality in ways tenants can't evaluate, and supporting arbitrary embedding models complicates the vector store schema. The BYOM choice is specifically about the generation and agent layer.
 
 ## Pydantic AI usage
 
@@ -255,6 +305,9 @@ project-root/
 - Do not use Elasticsearch. We use Qdrant + Postgres FTS.
 - Do not use LangChain or LlamaIndex as the agent framework. We use Pydantic AI.
 - Do not call the Anthropic or Ollama SDKs directly for anything that could be a Pydantic AI agent or tool. Consistency matters for observability and testing.
+- Do not hardcode any LLM provider, model name, API key, or endpoint URL in the codebase. Every LLM call resolves its provider through the tenant config factory. No exceptions, including for development scripts and tests (tests use a mock provider or Pydantic AI's TestModel).
+- Do not ship a default LLM provider or platform-owned API key. The product is BYOM. If a tenant has not configured a provider, LLM-dependent features are disabled for that tenant, not served from a shared pool.
+- Do not log API keys, even partially, outside the database layer. Mask them before any log line, error message, or response body leaves the provider factory.
 - Do not copy RAGFlow code verbatim. Read, understand, implement your own.
 - Do not skip types.
 - Do not write sync database code in request handlers.
@@ -290,26 +343,56 @@ project-root/
 # Clone RAGFlow reference (run once)
 git clone --depth 1 https://github.com/infiniflow/ragflow.git reference/ragflow
 
-# Backend dev
-cd backend
-uv sync
-uv run uvicorn app.main:app --reload
+# One-shot setup
+bash scripts/setup.sh                                          # clones ragflow, copies .env
 
-# Frontend dev
-cd frontend
-npm install
-npm run dev
+# Full stack (dev)
+docker compose --env-file .env -f docker/docker-compose.yml up --build
 
-# Full stack local
-docker compose -f docker/docker-compose.yml up
+# Migrations (always container-side)
+scripts/migrate.sh                                              # upgrade head
+scripts/migrate.sh revision --autogenerate -m "add foo"
 
-# Run tests
-cd backend && uv run pytest
-cd frontend && npm test
+# Backend dev (host-side imports for editor/IDE)
+cd backend && uv sync --extra dev
+
+# Frontend dev (npm, not pnpm)
+cd frontend && npm install && npm run dev
+
+# Tests inside the backend container (avoids cygwin process limits on Windows)
+docker compose --env-file .env -f docker/docker-compose.yml exec \
+    -e INTEGRATION_DATABASE_URL=postgresql+asyncpg://rag:rag@postgres:5432/rag \
+    -e INTEGRATION_BACKEND_URL=http://localhost:8000 \
+    backend uv run --extra dev pytest --no-cov
+
+# V1 smoke — upload, poll, search
+TENANT=$(uuidgen)
+psql -h localhost -U rag -d rag -c "INSERT INTO tenants (id, name) VALUES ('$TENANT','smoke');"
+curl -X POST http://localhost:8000/api/v1/documents \
+     -H "X-Tenant-ID: $TENANT" \
+     -F "file=@backend/tests/fixtures/fr_sample.pdf"
+# poll: curl http://localhost:8000/api/v1/documents/<id> -H "X-Tenant-ID: $TENANT"
+curl "http://localhost:8000/api/v1/search?q=le+sujet+principal&top_k=5" \
+     -H "X-Tenant-ID: $TENANT"
 ```
 
 ## Current phase
 
-v0: Project bootstrap, repo structure, Docker compose skeleton, database schema, auth, basic document upload and parsing.
+v0.2.0 (V1) shipped: single-document RAG pipeline. POST a PDF, the worker parses it (Docling, no OCR), chunks it (token-aware, BGE-M3 tokenizer), embeds chunks (BGE-M3 dense via sentence-transformers, CPU), upserts to Qdrant (collection `documents_v1`, 1024-dim cosine, payload-indexed on `tenant_id` + `document_id`). GET /api/v1/search returns top-k chunks scoped to the caller's tenant. Cross-tenant isolation proven by mutation-tested integration test. See [`docs/design/v1-pipeline.md`](./docs/design/v1-pipeline.md).
 
-Do not build features from later phases until v0 is solid.
+V1.5 (next phase): chat UI, Pydantic AI agents, duplicate-upload 409. Do not build these yet.
+
+## V1 deviations and lessons (learned the hard way)
+
+These are the things future Claude Code sessions need to know before touching the V1 surface. They are not contradictions of the rules above, just facts about the current implementation that surprised the V1 build.
+
+- **Embeddings: sentence-transformers, not FastEmbed.** CLAUDE.md permits either. We tried FastEmbed first and pivoted. Reasons documented in [`docs/design/v1-pipeline.md`](./docs/design/v1-pipeline.md): (1) Docling already pulls Torch in as a transitive dep, so the "no Torch in runtime" win is void; (2) FastEmbed's built-in catalog has no `bge-m3`; (3) `add_custom_model` against `BAAI/bge-m3` fails (ONNX in subdir, downloader skips); (4) community flat-layout exports load but emit a non-standard shape FastEmbed can't normalize. Re-evaluate in V2 if CPU latency becomes the bottleneck.
+- **Embedding cache volume is `embedding_cache`**, not `fastembed_cache`. Renamed during the swap; provider-agnostic. Mounted at `/app/.cache/embeddings` on backend AND worker. Setting: `EMBEDDING_CACHE_DIR`. Hardcoding the old name will not match the live volume.
+- **CPU embedding takes ~3-4 s per chunk.** An 8-page Wikipedia PDF (~30 chunks) processes end-to-end in ~140 s; two in parallel via `arq max_jobs=2` finish in ~200 s. The integration polling timeout is **240 s**, not the 60 s the design originally proposed. Don't budget downstream features against the optimistic original number.
+- **Integration tests run inside the backend container.** The Windows host hits a Cygwin process-table exhaustion (`TP_NUM_C_BUFS too small`) after enough subprocess spawns, so we run pytest via `docker compose exec backend uv run --extra dev pytest`. The conftest reads `INTEGRATION_DATABASE_URL` and `INTEGRATION_BACKEND_URL` from the env so the same code works from the host (defaults to `localhost:5432` / `http://localhost:8000`) or from inside the backend container (set both to the in-network forms).
+- **Migrations always run inside the container.** [`scripts/migrate.sh`](./scripts/migrate.sh) wraps `docker compose exec backend alembic`. Host-side `alembic` resolves the `postgres:5432` hostname against nothing.
+- **Backend image carries X11/XCB libs** (`libxcb1`, `libxext6`, `libsm6`, `libxrender1`, `libgl1`, `libglib2.0-0`). Docling's image-processing deps (Pillow, qpdf) need them even when we render headless. A future image-slimming pass will be tempted to remove them; don't, without re-running `tests/integration/test_pipeline.py` against the slimmed image.
+- **Tenant isolation is two layers in V1.** Qdrant payload filter (primary) plus Postgres `tenant_scoped()` on hydration (defense-in-depth). The integration test asserts both `len(hits) == top_k` and `hit["document_id"] == doc.id`, so removing either filter alone now breaks the test. RLS lands in V3.
+- **`worker` and `backend` are separate compose-built images** (`rag-saas-backend:latest` and `rag-saas-worker:latest`). Same Dockerfile, separate tags. After `docker compose build backend` the worker still uses its own image; rebuild it with `docker compose build worker` if the Dockerfile changed. `docker compose up -d --force-recreate backend worker` after rebuilds.
+
+Do not build features from later phases until V1.5 brainstorm starts.

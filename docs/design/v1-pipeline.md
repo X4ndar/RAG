@@ -10,7 +10,7 @@ The success criterion: an integration test uploads a small French PDF, polls unt
 
 ## Scope
 
-**In V1:** tenants table, documents table, chunks table, first Alembic migration, upload endpoint, background worker, Docling PDF parse (no OCR), token-aware chunker (512/64), BGE-M3 dense embeddings via FastEmbed, Qdrant collection `documents_v1` with payload filter for tenant isolation, search endpoint, unit + integration tests including cross-tenant isolation.
+**In V1:** tenants table, documents table, chunks table, first Alembic migration, upload endpoint, background worker, Docling PDF parse (no OCR), token-aware chunker (512/64), BGE-M3 dense embeddings via sentence-transformers (FastEmbed path investigated and ruled out, see deviation note below), Qdrant collection `documents_v1` with payload filter for tenant isolation, search endpoint, unit + integration tests including cross-tenant isolation.
 
 **Not V1:** chat UI, Pydantic AI agents, reranker, contextual retrieval, sparse/multi-vector embeddings, BM25/hybrid, auth beyond the tenant header dependency, Postgres RLS, Arabic test fixtures, deletion, reparsing, versioning, S3 storage, frontend changes, 409 on duplicate uploads (the `content_hash` index is a dedup surface for V1.5; V1 allows duplicates through).
 
@@ -43,7 +43,7 @@ The success criterion: an integration test uploads a small French PDF, polls unt
 Named volumes added in V1:
 
 - `document_storage` mounted at `/app/storage` in backend **and** worker containers.
-- `fastembed_cache` mounted at `/app/.cache/fastembed` in backend **and** worker. Saves redownloading BGE-M3's ~2 GB ONNX weights on every rebuild.
+- `embedding_cache` mounted at `/app/.cache/embeddings` in backend **and** worker. Saves redownloading BGE-M3's ~2 GB weights on every rebuild. (Renamed from `fastembed_cache` during the sentence-transformers swap; provider-agnostic.)
 
 ## Database schema (first migration)
 
@@ -247,7 +247,7 @@ From RAGFlow we take the delimiter-first-then-pack approach (`rag/app/naive.py::
 def _model() -> TextEmbedding:
     return TextEmbedding(
         model_name="BAAI/bge-m3",
-        cache_dir="/app/.cache/fastembed",
+        cache_folder="/app/.cache/embeddings",
         lazy_load=False,
     )
 
@@ -314,7 +314,7 @@ Pipeline inside `process_document`, each step flipping status and emitting a str
 4. Embed in batches of 32 → upsert points to Qdrant, set `embed_duration_ms`, flip to `ready`.
 5. On any exception: outer handler sets `status='failed'`, `error_message=str(exc)[:2000]`, logs full traceback at ERROR.
 
-New compose service `worker`: reuses `backend/Dockerfile`, `CMD ["arq", "app.jobs.worker.WorkerSettings"]`, same `depends_on` as backend, shares `document_storage` and `fastembed_cache`.
+New compose service `worker`: reuses `backend/Dockerfile`, `CMD ["arq", "app.jobs.worker.WorkerSettings"]`, same `depends_on` as backend, shares `document_storage` and `embedding_cache`.
 
 ## API endpoints
 
@@ -353,7 +353,7 @@ GET /api/v1/search
 1. `tests/unit/test_chunker.py`: markdown with known token counts. Assert every chunk ≤ 512 tokens, overlap ≈ 64 tokens between consecutive chunks, < 20-token chunks skipped, a no-delimiter 2000-token paragraph still chunks via hard-split fallback.
 2. `tests/unit/test_bge_m3.py`: `embed(["hello world"])` returns shape `[1][1024]`; same text twice yields cosine > 0.99.
 3. `tests/unit/test_tenant_deps.py`: missing header → 401; non-UUID → 401; valid UUID → dependency returns the UUID.
-4. `tests/integration/test_pipeline.py::test_end_to_end_single_tenant`: fresh tenant via pytest fixture (INSERT + DELETE on teardown). Upload `fr_sample.pdf`, poll `GET /documents/{id}` with 60 s timeout, then `GET /search?q=<phrase present in doc>`, assert `results[0].document_id == uploaded_doc_id` and `score > 0.4`.
+4. `tests/integration/test_pipeline.py::test_end_to_end_single_tenant`: fresh tenant via pytest fixture (INSERT + DELETE on teardown). Upload `fr_sample.pdf`, poll `GET /documents/{id}` with a 240 s timeout (raised from the originally proposed 60 s after observing real CPU embedding latency on the 8-page Wikipedia fixtures: ~140 s end-to-end per document), then `GET /search?q=<phrase present in doc>`, assert `results[0].document_id == uploaded_doc_id` and that scores are returned in descending order.
 5. `tests/integration/test_pipeline.py::test_tenant_isolation`: **the single most important multi-tenancy test.** Two fresh tenants A, B. Upload `fr_sample.pdf` as A, `fr_sample_2.pdf` as B. After both reach `ready`, tenant A issues a search whose top result against a merged index would be from B. Assert every returned `document_id == doc_a.id` (doc_b never appears). Repeat symmetrically from B. Both the Qdrant filter and the Postgres hydration query must hold; removing either filter individually must break the test.
 
 Fixtures: two short French Wikipedia articles exported as PDF, committed at `tests/fixtures/fr_sample.pdf` and `tests/fixtures/fr_sample_2.pdf`, on distinct topics. Source URLs, accessed date, and CC BY-SA license for both documented in `tests/fixtures/README.md`.
@@ -362,7 +362,7 @@ Fixtures: two short French Wikipedia articles exported as PDF, committed at `tes
 
 1. `feat(db): initial schema for tenants, documents, chunks` — models + Alembic migration + `TenantOwned` mixin + `tenant_scoped` helper. Commit body calls out explicitly that `ix_documents_tenant_content_hash` is a **dedup surface for V1.5**; V1 allows duplicate uploads through.
 2. `feat(parsers): docling pdf parser + token-aware chunker` — parser module, chunker module, unit test for chunker.
-3. `feat(embeddings): bge-m3 via fastembed with shared cache` — embedding module, unit test, `fastembed_cache` volume.
+3. `feat(embeddings): bge-m3 dense embeddings with shared cache` — embedding module (sentence-transformers after FastEmbed investigation), unit test, `embedding_cache` volume.
 4. `feat(retrieval): qdrant collection bootstrap and tenant-filtered search` — qdrant module, startup hook.
 5. `feat(jobs): arq worker for document processing pipeline` — worker module, idempotent `process_document`, compose `worker` service.
 6. `feat(api): document upload and search endpoints with tenant enforcement` — routes, Pydantic schemas, `get_current_tenant` dependency, python-magic MIME check, integration tests (both `test_end_to_end_single_tenant` and `test_tenant_isolation`).

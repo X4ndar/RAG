@@ -4,12 +4,12 @@ Covers:
     * Output shape is (len(inputs), 1024).
     * The dimension assertion is enforced on first call, not merely declared.
     * Deterministic output: embedding the same text twice yields cosine
-      similarity effectively 1.0. Pinned to `CPUExecutionProvider`, so
-      flakes here mean a real regression, not provider nondeterminism;
-      do not relax the threshold.
+      similarity effectively 1.0. Pinned to `device="cpu"`, so flakes here
+      mean a real regression, not provider nondeterminism; do not relax
+      the threshold.
 
-First run downloads ~2 GB of ONNX weights; subsequent runs hit the cache
-directory in `settings.fastembed_cache_dir`.
+First run downloads ~2 GB of weights; subsequent runs hit the cache
+directory in `settings.embedding_cache_dir`.
 """
 
 from __future__ import annotations

@@ -1,36 +1,34 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Frontend
 
-## Getting Started
+Next.js 16 (App Router, Tailwind v4, shadcn/ui, i18next-stub) for the RAG SaaS UI. Currently a v0 placeholder; chat and document UIs land in V1.5.
 
-First, run the development server:
+## Local dev
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Then open http://localhost:3000.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+This project uses **npm**, not pnpm/yarn/bun — match the rest of the toolchain (CI, Dockerfile, root scripts).
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Stack notes
 
-## Learn More
+- **Next.js 16** — see [`AGENTS.md`](./AGENTS.md). The version has breaking changes from training-cached defaults; consult `node_modules/next/dist/docs/` for API specifics.
+- **Tailwind v4** — config lives in `postcss.config.mjs` and the CSS file, not a separate `tailwind.config.ts`.
+- **shadcn/ui** — pre-wired in `components.json`. Add components with `npx shadcn@latest add <name>`.
+- **i18next** — the stub at `src/lib/i18n/` pins the locale set (`fr`, `ar`, `en`) and RTL list. Real locale routing is V1.5.
 
-To learn more about Next.js, take a look at the following resources:
+## Production build
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+npm run build
+npm run start
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+The Docker image uses Next's standalone output (`output: "standalone"` in `next.config.ts`) and runs `node server.js`.
 
-## Deploy on Vercel
+## Backend wiring
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+API base URL is read from `NEXT_PUBLIC_API_BASE` (defaults to `http://localhost:8000`).

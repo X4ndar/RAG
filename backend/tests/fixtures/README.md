@@ -32,8 +32,11 @@ Casablanca (the largest city in Morocco) share no notable vocabulary
 overlap, so a query intended to match one document would not plausibly
 return the other unless tenant filtering is broken.
 
-Both are short (≤8 pages, programmatic PDFs with extractable text) so the
-parse → chunk → embed pipeline finishes well within the 60 s test timeout.
+Both are short (≤8 pages, programmatic PDFs with extractable text). End-to-end
+pipeline time on CPU is ~140 s per document (Docling parse ~30 s, BGE-M3
+embedding the dominant cost at ~3-4 s per chunk). The integration test
+budget is 240 s and the cross-tenant test runs both pipelines in parallel
+under a shared deadline via `asyncio.gather`.
 
 ## Refreshing
 
