@@ -122,13 +122,18 @@ services:
       - /app/.venv
       - embedding_cache:/app/.cache/embeddings
       - document_storage:/app/storage
-    # The shared Dockerfile installs a `curl /health` healthcheck for the
-    # backend's uvicorn. The worker doesn't run uvicorn, so that probe
-    # never succeeds and `docker compose ps` shows (unhealthy) even when
-    # arq is processing jobs normally. Disable it; arq has no built-in
-    # http probe to wire up here.
+    # The shared Dockerfile installs a `curl /health` probe for the
+    # backend's uvicorn; the worker doesn't run uvicorn, so override
+    # with something meaningful: we just need to verify Redis is
+    # reachable, which is what arq actually depends on. redis-py ships
+    # in the worker venv as a transitive dep of arq, so no apt install
+    # is needed.
     healthcheck:
-      disable: true
+      test: ["CMD", "python", "-c", "import redis; redis.Redis(host='redis').ping()"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
     networks: [ragnet]
 
   frontend:
