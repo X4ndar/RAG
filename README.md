@@ -71,10 +71,10 @@ Unit tests run host-side OR container-side. Integration tests need the running c
 # Unit only, host-side
 cd backend && uv run --extra dev pytest tests/unit tests/test_health.py
 
-# Full suite (unit + integration) inside the backend container
+# Full suite (unit + integration) inside the backend container.
+# The integration conftest detects /.dockerenv and points at postgres:5432
+# automatically, so no -e flags needed.
 docker compose --env-file .env -f docker/docker-compose.yml exec \
-    -e INTEGRATION_DATABASE_URL=postgresql+asyncpg://rag:rag@postgres:5432/rag \
-    -e INTEGRATION_BACKEND_URL=http://localhost:8000 \
     backend uv run --extra dev pytest --no-cov
 ```
 

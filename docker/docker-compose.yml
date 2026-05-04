@@ -122,6 +122,13 @@ services:
       - /app/.venv
       - embedding_cache:/app/.cache/embeddings
       - document_storage:/app/storage
+    # The shared Dockerfile installs a `curl /health` healthcheck for the
+    # backend's uvicorn. The worker doesn't run uvicorn, so that probe
+    # never succeeds and `docker compose ps` shows (unhealthy) even when
+    # arq is processing jobs normally. Disable it; arq has no built-in
+    # http probe to wire up here.
+    healthcheck:
+      disable: true
     networks: [ragnet]
 
   frontend:

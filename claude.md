@@ -359,10 +359,10 @@ cd backend && uv sync --extra dev
 # Frontend dev (npm, not pnpm)
 cd frontend && npm install && npm run dev
 
-# Tests inside the backend container (avoids cygwin process limits on Windows)
+# Tests inside the backend container (avoids cygwin process limits on Windows).
+# Integration conftest auto-detects /.dockerenv and chooses postgres:5432
+# vs localhost:5432, so the -e INTEGRATION_* flags are NOT needed.
 docker compose --env-file .env -f docker/docker-compose.yml exec \
-    -e INTEGRATION_DATABASE_URL=postgresql+asyncpg://rag:rag@postgres:5432/rag \
-    -e INTEGRATION_BACKEND_URL=http://localhost:8000 \
     backend uv run --extra dev pytest --no-cov
 
 # V1 smoke — upload, poll, search
@@ -389,7 +389,7 @@ These are the things future Claude Code sessions need to know before touching th
 - **Embeddings: sentence-transformers, not FastEmbed.** CLAUDE.md permits either. We tried FastEmbed first and pivoted. Reasons documented in [`docs/design/v1-pipeline.md`](./docs/design/v1-pipeline.md): (1) Docling already pulls Torch in as a transitive dep, so the "no Torch in runtime" win is void; (2) FastEmbed's built-in catalog has no `bge-m3`; (3) `add_custom_model` against `BAAI/bge-m3` fails (ONNX in subdir, downloader skips); (4) community flat-layout exports load but emit a non-standard shape FastEmbed can't normalize. Re-evaluate in V2 if CPU latency becomes the bottleneck.
 - **Embedding cache volume is `embedding_cache`**, not `fastembed_cache`. Renamed during the swap; provider-agnostic. Mounted at `/app/.cache/embeddings` on backend AND worker. Setting: `EMBEDDING_CACHE_DIR`. Hardcoding the old name will not match the live volume.
 - **CPU embedding takes ~3-4 s per chunk.** An 8-page Wikipedia PDF (~30 chunks) processes end-to-end in ~140 s; two in parallel via `arq max_jobs=2` finish in ~200 s. The integration polling timeout is **240 s**, not the 60 s the design originally proposed. Don't budget downstream features against the optimistic original number.
-- **Integration tests run inside the backend container.** The Windows host hits a Cygwin process-table exhaustion (`TP_NUM_C_BUFS too small`) after enough subprocess spawns, so we run pytest via `docker compose exec backend uv run --extra dev pytest`. The conftest reads `INTEGRATION_DATABASE_URL` and `INTEGRATION_BACKEND_URL` from the env so the same code works from the host (defaults to `localhost:5432` / `http://localhost:8000`) or from inside the backend container (set both to the in-network forms).
+- **Integration tests run inside the backend container.** The Windows host hits a Cygwin process-table exhaustion (`TP_NUM_C_BUFS too small`) after enough subprocess spawns, so we run pytest via `docker compose exec backend uv run --extra dev pytest`. The conftest auto-detects `/.dockerenv` and switches its default DB host between `postgres:5432` (in-container) and `localhost:5432` (host); `INTEGRATION_DATABASE_URL` and `INTEGRATION_BACKEND_URL` are still honoured as overrides for non-default setups.
 - **Migrations always run inside the container.** [`scripts/migrate.sh`](./scripts/migrate.sh) wraps `docker compose exec backend alembic`. Host-side `alembic` resolves the `postgres:5432` hostname against nothing.
 - **Backend image carries X11/XCB libs** (`libxcb1`, `libxext6`, `libsm6`, `libxrender1`, `libgl1`, `libglib2.0-0`). Docling's image-processing deps (Pillow, qpdf) need them even when we render headless. A future image-slimming pass will be tempted to remove them; don't, without re-running `tests/integration/test_pipeline.py` against the slimmed image.
 - **Tenant isolation is two layers in V1.** Qdrant payload filter (primary) plus Postgres `tenant_scoped()` on hydration (defense-in-depth). The integration test asserts both `len(hits) == top_k` and `hit["document_id"] == doc.id`, so removing either filter alone now breaks the test. RLS lands in V3.
