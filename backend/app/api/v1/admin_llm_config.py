@@ -23,9 +23,13 @@ test_status is not 'passed'. The UI surfaces it as a banner.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic_ai import Agent
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 
@@ -33,7 +37,14 @@ from app.db.base import async_session_maker
 from app.db.models import TenantLLMConfig as TenantLLMConfigRow
 from app.db.tenant_scope import tenant_scoped
 from app.llm.encryption import encrypt, last4
-from app.models.llm_config import LLMConfigCreate, LLMConfigResponse
+from app.llm.factory import (
+    PROVIDER_TIMEOUTS_S,
+    ModelFactory,
+    TenantLLMConfig,
+    get_model_factory,
+)
+from app.llm.sanitise import safe_provider_message
+from app.models.llm_config import LLMConfigCreate, LLMConfigResponse, TestResult
 from app.tenancy.deps import CurrentTenant
 
 logger = logging.getLogger(__name__)
@@ -205,3 +216,87 @@ async def delete_llm_config(tenant_id: CurrentTenant) -> None:
             )
         )
     logger.info("llm_config_deleted", extra={"tenant_id": str(tenant_id)})
+
+
+@router.post(
+    "/admin/llm-config/test",
+    response_model=TestResult,
+)
+async def test_connection(
+    payload: LLMConfigCreate,
+    tenant_id: CurrentTenant,
+    model_factory: Annotated[ModelFactory, Depends(get_model_factory)],
+) -> TestResult:
+    """Run a one-shot prompt against the supplied provider config.
+
+    Synchronous: the user clicks "Test", we wait up to PROVIDER_TIMEOUTS_S
+    for the configured provider, return the result. Body matches the
+    create payload so the user can test BEFORE saving.
+
+    Production code uses the default `model_factory` returned by
+    `get_model_factory`. Tests inject a stub via
+    `app.dependency_overrides[get_model_factory]`. There is no env-var
+    swap, no module-level monkey-patching of `build_model`, no other
+    injection point.
+
+    `safe_provider_message` is called on EVERY error path. The unit test
+    `test_secret_hygiene_*` exercises each except branch with a fake
+    API key embedded in the exception, asserting the key never reaches
+    the response body or log line.
+    """
+    config = TenantLLMConfig(
+        provider=payload.provider,
+        model_name=payload.model_name,
+        base_url=str(payload.base_url) if payload.base_url else None,
+        api_key_plaintext=payload.api_key,
+    )
+    api_key = payload.api_key or ""
+    timeout_s = PROVIDER_TIMEOUTS_S[payload.provider]
+
+    started = time.perf_counter()
+    try:
+        model = model_factory(config)
+        agent = Agent(model, retries=0)
+        async with asyncio.timeout(timeout_s):
+            result = await agent.run("Reply with the single word OK.")
+    except TimeoutError:
+        elapsed_ms = int(timeout_s * 1000)
+        msg = f"timeout: provider did not respond within {timeout_s:.0f} s"
+        logger.warning(
+            "llm_config_test_timeout",
+            extra={"tenant_id": str(tenant_id), "provider": payload.provider},
+        )
+        return TestResult(ok=False, error=msg, latency_ms=elapsed_ms)
+    except (ConnectionError, OSError) as exc:
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        msg = f"unreachable: {safe_provider_message(exc, api_key)}"
+        logger.warning(
+            "llm_config_test_unreachable",
+            extra={"tenant_id": str(tenant_id), "provider": payload.provider},
+        )
+        return TestResult(ok=False, error=msg, latency_ms=elapsed_ms)
+    except Exception as exc:  # noqa: BLE001 — provider SDKs raise a wide variety
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        cleaned = safe_provider_message(exc, api_key)
+        # Heuristic: provider SDKs commonly say "auth", "401", "403", "key" on
+        # credential failures. Surface that to the UI as a more specific
+        # category. Fallback message is the cleaned exception text.
+        lowered = cleaned.lower()
+        if any(token in lowered for token in ("auth", "401", "403", "permiss", "api key")):
+            msg = f"authentication failed: {cleaned}"
+        else:
+            msg = cleaned
+        logger.warning(
+            "llm_config_test_failed",
+            extra={
+                "tenant_id": str(tenant_id),
+                "provider": payload.provider,
+                "exc_type": type(exc).__name__,
+            },
+        )
+        return TestResult(ok=False, error=msg, latency_ms=elapsed_ms)
+
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    output = result.output if hasattr(result, "output") else None
+    ok = bool(output and str(output).strip())
+    return TestResult(ok=ok, error=None if ok else "empty response", latency_ms=elapsed_ms)
