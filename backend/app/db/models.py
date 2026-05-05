@@ -35,6 +35,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -55,6 +56,17 @@ DOCUMENT_STATUSES = (
     "ready",
     "failed",
 )
+
+LLM_PROVIDER_TYPES = (
+    "anthropic",
+    "openai",
+    "google",
+    "mistral",
+    "openai_compatible",
+    "ollama",
+)
+
+LLM_TEST_STATUSES = ("untested", "passed", "failed")
 
 
 class TenantOwned:
@@ -186,4 +198,83 @@ class Chunk(Base, TenantOwned):
         JSONB,
         nullable=False,
         server_default=sql_text("'{}'::jsonb"),
+    )
+
+
+class TenantLLMConfig(Base, TenantOwned):
+    """A tenant's BYOM provider configuration.
+
+    One row per tenant in V1.5a (UNIQUE on tenant_id). Multi-config (per-role)
+    is a V2 change: drop the unique index and add a `role` column.
+
+    `api_key_encrypted` is a Fernet token (bytes). It is NULL only for the
+    `ollama` provider, which typically requires no auth. For every other
+    provider the conditional CHECK guarantees both the encrypted blob (>= 80
+    bytes, dodging Fernet truncation bugs) and the four-character last4 are
+    present.
+
+    `test_status` records the most recent /test outcome for this tenant's
+    config — persisted so the admin UI can show it without rerunning.
+    """
+
+    __tablename__ = "tenant_llm_configs"
+    __table_args__ = (
+        CheckConstraint(
+            f"provider IN ({', '.join(repr(p) for p in LLM_PROVIDER_TYPES)})",
+            name="ck_tenant_llm_configs_provider",
+        ),
+        CheckConstraint(
+            f"test_status IN ({', '.join(repr(s) for s in LLM_TEST_STATUSES)})",
+            name="ck_tenant_llm_configs_test_status",
+        ),
+        CheckConstraint(
+            "(provider = 'ollama')"
+            " OR ("
+            " api_key_encrypted IS NOT NULL"
+            " AND length(api_key_encrypted) >= 80"
+            " AND length(api_key_last4) = 4"
+            ")",
+            name="ck_tenant_llm_configs_api_key_present_when_required",
+        ),
+        Index(
+            "ix_tenant_llm_configs_tenant",
+            "tenant_id",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_name: Mapped[str] = mapped_column(Text, nullable=False)
+    base_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_key_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    api_key_last4: Mapped[str] = mapped_column(
+        String(4),
+        nullable=False,
+        server_default="",
+    )
+    test_status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default="untested",
+    )
+    test_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tested_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
