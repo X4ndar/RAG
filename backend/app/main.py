@@ -5,13 +5,15 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.jobs.enqueue import close_pool
+from app.llm.encryption import MasterKeyMissingError
 from app.retrieval.qdrant_client import close_client, ensure_collection
 from app.tenancy.middleware import TenantMiddleware
 
@@ -53,6 +55,23 @@ app.add_middleware(
 
 app.add_middleware(TenantMiddleware)
 app.include_router(api_router)
+
+
+@app.exception_handler(MasterKeyMissingError)
+async def _master_key_missing_handler(
+    _request: Request,
+    _exc: MasterKeyMissingError,
+) -> JSONResponse:
+    """Map the LLM encryption module's `MasterKeyMissingError` to a single 503.
+
+    The encryption module is the single chokepoint that raises this; this
+    handler is the single place that maps it. Endpoints don't need to
+    catch it themselves.
+    """
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": "LLM service is misconfigured. Contact your operator."},
+    )
 
 
 @app.get("/health", tags=["meta"])

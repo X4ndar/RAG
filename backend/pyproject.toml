@@ -22,6 +22,8 @@ dependencies = [
     "qdrant-client>=1.12",
     "python-magic>=0.4",
     "transformers>=4.44",
+    "cryptography>=42",
+    "pydantic-ai>=1.0,<1.2",
 ]
 
 [project.optional-dependencies]

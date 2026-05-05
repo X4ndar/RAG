@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     ollama_host: str = "http://host.docker.internal:11434"
 
+    # 32-byte URL-safe base64 Fernet key. Loaded by app.llm.encryption at
+    # call time, NOT cached in the Settings instance. None or malformed
+    # surfaces as MasterKeyMissing → 503 from every LLM-touching endpoint.
+    llm_config_master_key: str | None = None
+
     embedding_model: str = "BAAI/bge-m3"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     # Shared embedding-model weights cache. In-container this points at the
