@@ -4,15 +4,19 @@ A multi-tenant Retrieval-Augmented Generation platform for small and mid-sized b
 
 ## Status
 
-`v0.2.0` (V1) shipped: single-document RAG pipeline. Upload a PDF, the worker parses (Docling), chunks (token-aware), embeds (BGE-M3 via sentence-transformers, CPU), and indexes to Qdrant. Search returns top-k chunks scoped to the caller's tenant. Cross-tenant isolation is enforced at the Qdrant payload filter and again at the Postgres hydration query. See [`docs/design/v1-pipeline.md`](./docs/design/v1-pipeline.md) for the full design and [`CHANGELOG.md`](./CHANGELOG.md) for what's in each release.
+`v0.3.0` (V1.5a) shipped: BYOM (bring-your-own-model) configuration plumbing. Each tenant configures their own LLM provider through `/settings/llm-provider`; credentials are encrypted at rest with Fernet, the platform never ships a default provider. Six provider types: Anthropic, OpenAI, Google, Mistral, OpenAI-compatible custom, Ollama. A typed factory (`agent_for_tenant(tenant_id)`) is the single chokepoint between tenant configs and Pydantic AI Agents — V1.5b's chat UI plugs in on top of it. See [`docs/design/v1.5a-byom-config.md`](./docs/design/v1.5a-byom-config.md).
 
-V1.5 (chat UI, agents, duplicate-upload 409) and V2 (reranker, contextual retrieval, hybrid search, Arabic test fixtures, RLS) are deliberate non-goals at this point.
+`v0.2.0` (V1) shipped: single-document RAG pipeline. Upload a PDF, the worker parses (Docling), chunks (token-aware), embeds (BGE-M3 via sentence-transformers, CPU), and indexes to Qdrant. Search returns top-k chunks scoped to the caller's tenant. Cross-tenant isolation is enforced at the Qdrant payload filter and again at the Postgres hydration query. See [`docs/design/v1-pipeline.md`](./docs/design/v1-pipeline.md).
+
+V1.5b (chat UI, answer agent, master-key rotation tooling) and V2 (reranker, contextual retrieval, hybrid search, Arabic test fixtures, RLS, real auth) are deliberate non-goals at this point. Full release notes in [`CHANGELOG.md`](./CHANGELOG.md).
 
 ## Run locally (three commands)
 
 ```bash
 bash scripts/setup.sh                                                      # clones RAGFlow, copies .env
-# edit .env if you want non-default ports or LLM provider, then:
+# Generate a Fernet master key for at-rest API-key encryption and write
+# it into .env. Required by V1.5a; the LLM endpoints return 503 without it.
+python -c "from cryptography.fernet import Fernet; print('LLM_CONFIG_MASTER_KEY=' + Fernet.generate_key().decode())" >> .env
 docker compose --env-file .env -f docker/docker-compose.yml up --build
 ```
 
@@ -27,6 +31,30 @@ docker compose --env-file .env -f docker/docker-compose.yml exec redis redis-cli
 docker compose --env-file .env -f docker/docker-compose.yml \
     exec postgres psql -U rag -d rag -c "SELECT extname FROM pg_extension;"  # includes vector
 ```
+
+### V1.5a happy path (configure a provider)
+
+```bash
+TENANT=$(uuidgen)
+docker compose --env-file .env -f docker/docker-compose.yml \
+    exec postgres psql -U rag -d rag \
+    -c "INSERT INTO tenants (id, name) VALUES ('$TENANT','byom-smoke');"
+
+# Save a config (warning surfaces because no test was run yet).
+curl -X POST http://localhost:8000/api/v1/admin/llm-config \
+     -H "X-Tenant-ID: $TENANT" -H "Content-Type: application/json" \
+     -d '{"provider":"anthropic","model_name":"claude-sonnet-4-5","api_key":"sk-ant-test-12345"}'
+
+# Run a connection test against the (real) provider; result is {ok, latency_ms, error}.
+curl -X POST http://localhost:8000/api/v1/admin/llm-config/test \
+     -H "X-Tenant-ID: $TENANT" -H "Content-Type: application/json" \
+     -d '{"provider":"anthropic","model_name":"claude-sonnet-4-5","api_key":"<your-real-key>"}'
+
+# Read back the masked view (api_key_last4 only, no full key).
+curl http://localhost:8000/api/v1/admin/llm-config -H "X-Tenant-ID: $TENANT"
+```
+
+The same flow is available with form UI at <http://localhost:3000/settings/llm-provider> (paste the tenant UUID into the Tenant ID field; it persists in localStorage).
 
 ### V1 happy path
 

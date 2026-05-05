@@ -201,16 +201,17 @@ Pydantic AI is the agent orchestration layer. It sits between raw LLM calls and 
 - Return Pydantic models from agents, not raw strings. Validate everything at the boundary.
 - For chat, use the streaming API and forward tokens to the frontend via Server-Sent Events or WebSocket.
 
-**Provider configuration:**
+**Provider configuration (BYOM, V1.5a+):**
 
-- Configure models in `app/llm/providers.py` as named constants: `CLAUDE_SONNET`, `CLAUDE_HAIKU`, `OLLAMA_QWEN`. Agents reference these constants, not raw strings.
-- Read the active provider from environment variables. Default to Ollama in development, Claude in production.
-- Set up Logfire (Pydantic's observability tool) in non-dev environments for tracing agent runs. Free tier is fine for v0.
+- The provider is read from the **per-tenant** `tenant_llm_configs` row, not from any platform-level constant or env var. There is no `app/llm/providers.py` with `CLAUDE_SONNET` / `OLLAMA_QWEN` constants and there is no platform-default provider; that earlier paragraph predated the BYOM section above and contradicted it.
+- All agents are constructed via `app/llm/factory.py::agent_for_tenant(tenant_id)`. This is the single chokepoint where "which model do I call" is resolved. Agents and tools never instantiate Pydantic AI `Model` or `Provider` classes directly.
+- `agent_for_tenant` raises `LLMNotConfiguredError` when the tenant has no row; the API layer maps this to 409. Missing master key → `MasterKeyMissingError` → 503 (single FastAPI handler in `app.main`).
+- Logfire is **not** wired up in V1.5a (its OpenTelemetry transitive deps conflict with our pinned versions; pytest disables the plugin via `-p no:logfire`). Re-evaluate when V2 needs production tracing.
 
 **Testing agents:**
 
-- Pydantic AI has a `TestModel` that returns canned responses without hitting a real LLM. Use it in unit tests.
-- For integration tests, use Ollama with a small model so tests don't cost money and don't require internet.
+- Pydantic AI's `TestModel` returns canned responses without a real LLM. The supported way to inject it is `app.dependency_overrides[get_model_factory] = lambda: stub_factory` against the in-process FastAPI app. Production code reads no env-var swap flag; dependency injection is the only swap path.
+- Worker-style call sites (anything that imports `build_model` directly) test via `monkeypatch.setattr(app.llm.factory, "build_model", stub)`.
 
 ## Project layout
 
@@ -365,6 +366,17 @@ cd frontend && npm install && npm run dev
 docker compose --env-file .env -f docker/docker-compose.yml exec \
     backend uv run --extra dev pytest --no-cov
 
+# V1.5a smoke — configure provider, test, save
+TENANT=$(uuidgen)
+psql -h localhost -U rag -d rag -c "INSERT INTO tenants (id, name) VALUES ('$TENANT','byom');"
+curl -X POST http://localhost:8000/api/v1/admin/llm-config \
+     -H "X-Tenant-ID: $TENANT" -H "Content-Type: application/json" \
+     -d '{"provider":"anthropic","model_name":"claude-sonnet-4-5","api_key":"sk-ant-test-12345"}'
+curl -X POST http://localhost:8000/api/v1/admin/llm-config/test \
+     -H "X-Tenant-ID: $TENANT" -H "Content-Type: application/json" \
+     -d '{"provider":"anthropic","model_name":"claude-sonnet-4-5","api_key":"sk-ant-test-12345"}'
+curl http://localhost:8000/api/v1/admin/llm-config -H "X-Tenant-ID: $TENANT"
+
 # V1 smoke — upload, poll, search
 TENANT=$(uuidgen)
 psql -h localhost -U rag -d rag -c "INSERT INTO tenants (id, name) VALUES ('$TENANT','smoke');"
@@ -377,6 +389,10 @@ curl "http://localhost:8000/api/v1/search?q=le+sujet+principal&top_k=5" \
 ```
 
 ## Current phase
+
+v0.3.0 (V1.5a) shipped: BYOM configuration plumbing. Tenants configure their own LLM provider through `/settings/llm-provider`; credentials encrypted at rest with Fernet (master key from `LLM_CONFIG_MASTER_KEY`); `app/llm/factory.py::agent_for_tenant(tenant_id)` is the single chokepoint that turns a saved config into a Pydantic AI `Agent`. Six providers: Anthropic, OpenAI, Google, Mistral, OpenAI-compatible custom, Ollama. POST `/api/v1/admin/llm-config/test` runs a 5-15 s connection probe and returns a UI-safe pass/fail. See [`docs/design/v1.5a-byom-config.md`](./docs/design/v1.5a-byom-config.md).
+
+V1.5b (next phase): chat UI, answer agent, master-key rotation tooling. Do not build these yet.
 
 v0.2.0 (V1) shipped: single-document RAG pipeline. POST a PDF, the worker parses it (Docling, no OCR), chunks it (token-aware, BGE-M3 tokenizer), embeds chunks (BGE-M3 dense via sentence-transformers, CPU), upserts to Qdrant (collection `documents_v1`, 1024-dim cosine, payload-indexed on `tenant_id` + `document_id`). GET /api/v1/search returns top-k chunks scoped to the caller's tenant. Cross-tenant isolation proven by mutation-tested integration test. See [`docs/design/v1-pipeline.md`](./docs/design/v1-pipeline.md).
 
@@ -395,4 +411,13 @@ These are the things future Claude Code sessions need to know before touching th
 - **Tenant isolation is two layers in V1.** Qdrant payload filter (primary) plus Postgres `tenant_scoped()` on hydration (defense-in-depth). The integration test asserts both `len(hits) == top_k` and `hit["document_id"] == doc.id`, so removing either filter alone now breaks the test. RLS lands in V3.
 - **`worker` and `backend` are separate compose-built images** (`rag-saas-backend:latest` and `rag-saas-worker:latest`). Same Dockerfile, separate tags. After `docker compose build backend` the worker still uses its own image; rebuild it with `docker compose build worker` if the Dockerfile changed. `docker compose up -d --force-recreate backend worker` after rebuilds.
 
-Do not build features from later phases until V1.5 brainstorm starts.
+## V1.5a deviations and lessons
+
+- **Pydantic AI is `pydantic-ai-slim[anthropic,openai,google,mistral]>=1.85,<2`.** The umbrella `pydantic-ai` 1.0/1.1 series referenced anthropic SDK symbols (`UserLocation`) that have since been removed; 1.85+ tracks current SDKs. Cap is `<2` because the 2.x line will be a separate breaking-change decision for V1.5b.
+- **Ollama routes through `OpenAIChatModel`**, not a dedicated `OllamaModel`. As of pydantic-ai-slim 1.90 there is no `OllamaModel` class — Ollama is OpenAI-compatible by contract, so `factory.build_model` dispatches `ollama` to `OpenAIChatModel + OpenAIProvider(base_url=...)`. The user-facing form still shows "Ollama" as a discrete provider; routing is internal.
+- **Logfire pytest plugin is disabled** via `-p no:logfire` in `pyproject.toml`'s addopts. It auto-loads from a transitive Pydantic AI dep and has an OpenTelemetry version conflict that surfaces during test discovery. We don't use Logfire in tests.
+- **`MasterKeyMissingError` is a single chokepoint.** `app/llm/encryption.py::_load_fernet()` is the only function that raises it; one FastAPI exception handler in `app.main` maps to 503. Endpoints don't catch it themselves. A unit test in `tests/unit/test_encryption.py::test_master_key_missing_chokepoint_is_load_fernet` enforces this invariant by inspecting the encryption module's source.
+- **Test mocking is dependency injection only.** `app/llm/factory.py::get_model_factory` is the FastAPI dep; tests override via `app.dependency_overrides[get_model_factory]`. There is no env-var swap flag in production code (`tests/integration/test_secret_hygiene_endpoint.py::test_only_dependency_injection_can_swap_the_factory` greps the route module to enforce this).
+- **V1.5a integration tests run in-process via `httpx.ASGITransport`**, not against `localhost:8000`. The reason is that `app.dependency_overrides` only takes effect on the same process that owns the FastAPI `app`. V1's worker-pipeline tests still hit the live container because they exercise an out-of-process worker; both styles coexist.
+
+Do not build features from later phases until V1.5b brainstorm starts.

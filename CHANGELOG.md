@@ -6,6 +6,42 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 Nothing yet.
 
+## [v0.3.0] — 2026-05-05
+
+V1.5a: BYOM (bring-your-own-model) configuration plumbing. Each tenant configures their own LLM provider; the platform never ships a default. Six provider types and a typed factory for V1.5b's chat UI to plug into.
+
+### Added
+
+- `tenant_llm_configs` table (second Alembic migration `ffa2b6ed122c`) with one row per tenant (UNIQUE on `tenant_id`), Fernet-encrypted `api_key_encrypted` (`bytea`), plaintext `api_key_last4` for UI display, persisted `test_status` / `test_error` / `tested_at`. Three named CHECK constraints (provider whitelist, test_status whitelist, conditional `api_key_encrypted IS NOT NULL AND length >= 80 AND length(last4) = 4` when provider is not `ollama`). One named constraint per logical invariant.
+- `app/llm/encryption.py` — Fernet wrapper. `_load_fernet()` is the single chokepoint that reads `LLM_CONFIG_MASTER_KEY`; the only function that raises `MasterKeyMissingError`. A unit test enforces the chokepoint by inspecting the module source. One FastAPI exception handler in `app/main.py` maps the exception to **503**; endpoints don't catch it themselves.
+- `app/llm/factory.py` — provider factory. `build_model(config)` is **pure synchronous** (no I/O, no async), dispatch via if-chain on the provider key. `agent_for_tenant(tenant_id)` is the single chokepoint that turns a saved config into a Pydantic AI `Agent`. `LLMNotConfiguredError` (→ 409) when the tenant has no row. `get_model_factory()` is the FastAPI dependency tests override; production code reads no env-var swap flag. `PROVIDER_TIMEOUTS_S` table (5 s ollama, 15 s cloud) co-located with the factory.
+- `app/llm/sanitise.py::safe_provider_message()` — strips verbatim API keys, Authorization Bearer tokens, `api_key=` query strings, and `'Authorization': '...'` dict reprs from any error message before it reaches the UI. Called on **every** error path of the test endpoint.
+- `POST /api/v1/admin/llm-config` (create/replace), `GET /api/v1/admin/llm-config` (last-4 view), `DELETE /api/v1/admin/llm-config` (idempotent). 201 responses include a `warning` field that the UI renders as a yellow banner when the saved row's `test_status != 'passed'`.
+- `POST /api/v1/admin/llm-config/test` — synchronous live probe against the supplied config with provider-specific timeout. Returns `{ok, latency_ms, error}`; 200 even when `ok=false` (failed test isn't an HTTP error).
+- `/settings/llm-provider` Next.js admin form — server shell + client form. Conditional fields by provider, masked-key chip showing last 4, "Test connection" button with inline pass/fail, save-after-pass UX with error/warning banners. Tenant ID input persists to localStorage as a V1.5a-only dev affordance.
+- 39 new tests: 8 encryption (round-trip, tamper-detect, missing/malformed key, chokepoint invariant, helpers), 13 factory dispatch (pure-sync invariant, provider→class mapping, base_url propagation, timeout-table coverage), 7 sanitiser unit, 7 sanitiser endpoint-level (per-except-branch), 4 secret-hygiene exercises against the live endpoint via DI, plus 10 admin CRUD integration tests. Total V1.5a unit+integration: 45 tests.
+
+### Changed
+
+- **Pydantic AI dependency:** `pydantic-ai-slim[anthropic,openai,google,mistral]>=1.85,<2`. The umbrella `pydantic-ai` 1.0/1.1 series referenced anthropic SDK symbols (`UserLocation`) that have since been removed; 1.85+ tracks current SDKs. The `<2` cap is a deliberate "decide explicitly when 2.x lands."
+- **Ollama routes through `OpenAIChatModel`** internally (Pydantic AI 1.90 ships no dedicated `OllamaModel`). The user-facing form still presents Ollama as a discrete option.
+- **CLAUDE.md provider configuration section rewritten.** The earlier "named constants in `app/llm/providers.py`" + "default to Ollama in dev, Claude in prod" paragraph contradicted the BYOM mandate; replaced with the factory-based pattern. Logfire bullet noted as deferred (transitive OpenTelemetry conflict).
+- **Logfire pytest plugin disabled** via `-p no:logfire` in `addopts` — auto-loaded transitive dep with an OpenTelemetry version conflict that surfaces during test discovery.
+- **Backend Dockerfile** unchanged in V1.5a but the image must be rebuilt (`docker compose build backend && docker compose build worker`) to pick up the new Python deps (`cryptography`, `pydantic-ai-slim`).
+
+### Deferred (explicit non-goals for v0.3.0)
+
+- Chat UI / answer agent / streaming — V1.5b
+- Master-key rotation tooling (`LLM_CONFIG_MASTER_KEY_FALLBACK` + re-encrypt-on-save) — V1.5b
+- Multiple configs per tenant (per-role: chat vs enrichment vs router) — V2
+- Per-request provider override — V2
+- Cohere and Groq providers — V1.5b or later, when a tenant asks
+- Usage metering / cost tracking / quota enforcement — out of V1.5a scope
+- Provider-level rate-limit handling beyond pass-through — V2
+- Model parameter overrides (temperature, top_p, max_tokens) on the saved config — defaults set per-agent at call time
+- Auth roles inside a tenant — V2 auth layer
+- Real secrets-management story (Docker secrets, Vault, AWS SM) for the master key — operator-side decision; the env-var pattern is dev-grade
+
 ## [v0.2.0] — 2026-04-27
 
 V1 ships: a single-document end-to-end RAG pipeline with cross-tenant isolation gated by a mutation-tested integration test.
@@ -57,6 +93,7 @@ V1 ships: a single-document end-to-end RAG pipeline with cross-tenant isolation 
 
 V0 scaffold: FastAPI + Next.js 16 + Postgres 16 (pgvector) + Qdrant + Redis in Docker Compose. No features; `docker compose up` yields healthy infra plus `/health` and an empty Next.js page. RAGFlow reference cloned and gitignored. Migration workflow scoped to the backend container via `scripts/migrate.sh`.
 
-[Unreleased]: https://github.com/X4ndar/RAG/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/X4ndar/RAG/compare/v0.3.0...HEAD
+[v0.3.0]: https://github.com/X4ndar/RAG/compare/v0.2.0...v0.3.0
 [v0.2.0]: https://github.com/X4ndar/RAG/compare/v0.1.0...v0.2.0
 [v0.1.0]: https://github.com/X4ndar/RAG/releases/tag/v0.1.0
