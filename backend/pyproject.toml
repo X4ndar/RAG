@@ -23,7 +23,16 @@ dependencies = [
     "python-magic>=0.4",
     "transformers>=4.44",
     "cryptography>=42",
-    "pydantic-ai>=1.0,<1.2",
+    # pydantic-ai-slim with per-provider extras instead of the umbrella
+    # `pydantic-ai`. The umbrella pulls anthropic SDK pins that have
+    # already drifted out of compatibility with the installed
+    # transitive dep tree; the slim package gives us deterministic
+    # installs scoped to the providers we ship.
+    # pydantic-ai-slim 1.0–1.1 referenced anthropic SDK symbols that have
+    # since been removed; 1.85+ tracks the current SDKs cleanly. Cap at <2
+    # because the 2.x release line will be a separate breaking-change
+    # decision for V1.5b.
+    "pydantic-ai-slim[anthropic,openai,google,mistral]>=1.85,<2",
 ]
 
 [project.optional-dependencies]
@@ -85,5 +94,5 @@ asyncio_mode = "auto"
 # test fails on "Future attached to a different loop" during teardown.
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
-addopts = "-ra --strict-markers --cov=app --cov-report=term-missing"
+addopts = "-ra --strict-markers --cov=app --cov-report=term-missing -p no:logfire"
 testpaths = ["tests"]
